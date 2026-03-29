@@ -126,22 +126,9 @@ where
         let has_output_only = rev_output.iter().any(|l| !all_input_labels.contains(l));
 
         let grad = if has_output_only {
-            // For subscripts with output-only labels (e.g. trace "ii->"),
-            // the reverse einsum "->ii" is invalid. Build the gradient
-            // directly: cotangent broadcast-multiplied with the appropriate
-            // identity structure.
-            //
-            // Step 1: build a delta tensor whose subscripts cover ALL
-            //         output-only labels with fresh paired indices.
-            // Step 2: einsum the cotangent with any remaining operands and
-            //         the delta, producing a tensor with the right unique
-            //         output labels.
-            // Step 3: use "i->ii" (diagonal embedding) via forward einsum
-            //         if the output has repeated labels.
-            //
-            // For the common single-operand trace "ii->":
-            //   unique output labels = {i}, reverse needs shape [n, n]
-            //   grad = cotangent * eye(n)
+            // Output-only labels (e.g. trace "ii->"): reverse einsum "->ii" is
+            // invalid.  Build gradient via cotangent broadcast with delta tensors
+            // using [label, fresh] subscripts, then diagonal-embed if needed.
             let unique_output: Vec<u32> = {
                 let mut seen = HashSet::new();
                 rev_output
@@ -166,19 +153,16 @@ where
                     delta_subs.push(label);
                 }
             }
-            // Build subscripts: cotangent + conj_ops + deltas -> unique_output
+            let max_label = subs
+                .inputs
+                .iter()
+                .flat_map(|v| v.iter())
+                .chain(subs.output.iter())
+                .copied()
+                .max()
+                .unwrap_or(0);
             let mut fwd_inputs = rev_inputs_subs.clone();
             for &label in &delta_subs {
-                // delta with subscript [label, label_fresh] where label_fresh
-                // is a new label not used anywhere.
-                let max_label = subs
-                    .inputs
-                    .iter()
-                    .flat_map(|v| v.iter())
-                    .chain(subs.output.iter())
-                    .copied()
-                    .max()
-                    .unwrap_or(0);
                 let fresh = max_label + 1 + (fwd_inputs.len() as u32);
                 fwd_inputs.push(vec![label, fresh]);
             }
@@ -193,19 +177,16 @@ where
             for dt in &delta_tensors {
                 fwd_ops.push(dt);
             }
-            // This gives a tensor with unique_output labels
             let base = einsum_with_subscripts::<Alg, Backend>(ctx, &fwd_subs, &fwd_ops, None)?;
 
-            // If unique_output != rev_output, need diagonal embedding
             if unique_output == rev_output {
                 base
             } else {
-                // Diagonal embedding: e.g. "i->ii"
-                let embed_subs = Subscripts {
+                let embed = Subscripts {
                     inputs: vec![unique_output],
                     output: rev_output.clone(),
                 };
-                einsum_with_subscripts::<Alg, Backend>(ctx, &embed_subs, &[&base], None)?
+                einsum_with_subscripts::<Alg, Backend>(ctx, &embed, &[&base], None)?
             }
         } else {
             let mut rev_operands: Vec<&Tensor<Alg::Scalar>> = vec![cotangent];
@@ -388,6 +369,14 @@ where
             .iter()
             .flat_map(|labels| labels.iter().copied())
             .collect();
+        let unique_output: Vec<u32> = {
+            let mut seen = HashSet::new();
+            rev_output
+                .iter()
+                .filter(|l| seen.insert(**l))
+                .copied()
+                .collect()
+        };
         let mut unique_missing = Vec::new();
         {
             let mut seen = HashSet::new();
@@ -397,6 +386,15 @@ where
                 }
             }
         }
+        // Use [label, fresh] subscripts for delta tensors (consistent with einsum_rrule).
+        let max_label = subs
+            .inputs
+            .iter()
+            .flat_map(|v| v.iter())
+            .chain(subs.output.iter())
+            .copied()
+            .max()
+            .unwrap_or(0);
         let mut delta_tensors: Vec<Tensor<Alg::Scalar>> = Vec::new();
         for &label in &unique_missing {
             let dim = *size_dict.get(&label).ok_or_else(|| {
@@ -406,14 +404,29 @@ where
                 ))
             })?;
             let space = primals[0].logical_memory_space();
-            let eye = make_delta::<Alg::Scalar>(dim, space)?;
-            rev_inputs_subs.push(vec![label, label]);
-            delta_tensors.push(eye);
+            let fresh = max_label + 1 + (rev_inputs_subs.len() as u32);
+            rev_inputs_subs.push(vec![label, fresh]);
+            delta_tensors.push(make_delta::<Alg::Scalar>(dim, space)?);
         }
-
-        let rev_subs = Subscripts {
+        let needs_embedding = unique_output != rev_output;
+        let base_subs = Subscripts {
             inputs: rev_inputs_subs,
-            output: rev_output,
+            output: unique_output.clone(),
+        };
+
+        // Helper: apply diagonal embedding if needed.
+        let maybe_embed = |ctx: &mut BackendContext<Alg, Backend>,
+                           t: Tensor<Alg::Scalar>|
+         -> Result<Tensor<Alg::Scalar>> {
+            if needs_embedding {
+                let embed = Subscripts {
+                    inputs: vec![unique_output.clone()],
+                    output: rev_output.clone(),
+                };
+                einsum_with_subscripts::<Alg, Backend>(ctx, &embed, &[&t], None)
+            } else {
+                Ok(t)
+            }
         };
 
         let mut rev_operands: Vec<&Tensor<Alg::Scalar>> = vec![cotangent];
@@ -423,7 +436,9 @@ where
         for dt in &delta_tensors {
             rev_operands.push(dt);
         }
-        let grad_k = einsum_with_subscripts::<Alg, Backend>(ctx, &rev_subs, &rev_operands, None)?;
+        let base_grad =
+            einsum_with_subscripts::<Alg, Backend>(ctx, &base_subs, &rev_operands, None)?;
+        let grad_k = maybe_embed(ctx, base_grad)?;
 
         let mut ops: Vec<&Tensor<Alg::Scalar>> = vec![cotangent_tangent];
         for c in &conj_store {
@@ -433,7 +448,7 @@ where
             ops.push(dt);
         }
         let mut hvp_k = Some(einsum_with_subscripts::<Alg, Backend>(
-            ctx, &rev_subs, &ops, None,
+            ctx, &base_subs, &ops, None,
         )?);
 
         for (j, tangent_j_opt) in tangents.iter().enumerate().take(n) {
@@ -442,7 +457,6 @@ where
             }
             if let Some(tangent_j) = *tangent_j_opt {
                 let mut ops: Vec<&Tensor<Alg::Scalar>> = vec![cotangent];
-                // conj_store has one entry per i != k, in order.
                 let mut ci = 0;
                 for (i, _) in primals.iter().enumerate() {
                     if i != k {
@@ -456,13 +470,13 @@ where
                 match &mut hvp_k {
                     None => {
                         hvp_k = Some(einsum_with_subscripts::<Alg, Backend>(
-                            ctx, &rev_subs, &ops, None,
+                            ctx, &base_subs, &ops, None,
                         )?);
                     }
                     Some(existing) => {
                         let one = <Alg::Scalar as num_traits::One>::one();
                         einsum_with_subscripts_into::<Alg, Backend>(
-                            ctx, &rev_subs, &ops, one, one, existing, None,
+                            ctx, &base_subs, &ops, one, one, existing, None,
                         )?;
                     }
                 }
@@ -470,13 +484,12 @@ where
         }
 
         let hvp_k = match hvp_k {
-            Some(t) => t,
+            Some(t) => maybe_embed(ctx, t)?,
             None => {
                 let space = primals[k].logical_memory_space();
                 Tensor::zeros(primals[k].dims(), space, MemoryOrder::ColumnMajor)?
             }
         };
-
         results.push((grad_k, hvp_k));
     }
 
