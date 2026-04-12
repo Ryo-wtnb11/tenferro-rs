@@ -653,29 +653,22 @@ trait DiagSingularity {
     fn is_singular_or_nonfinite(&self) -> bool;
 }
 
-impl DiagSingularity for f64 {
-    fn is_singular_or_nonfinite(&self) -> bool {
-        !self.is_finite() || *self == 0.0
-    }
+macro_rules! impl_diag_real {
+    ($($t:ty),* $(,)?) => { $( impl DiagSingularity for $t {
+        fn is_singular_or_nonfinite(&self) -> bool { !self.is_finite() || *self == 0.0 }
+    })* };
 }
 
-impl DiagSingularity for f32 {
-    fn is_singular_or_nonfinite(&self) -> bool {
-        !self.is_finite() || *self == 0.0
-    }
+macro_rules! impl_diag_complex {
+    ($($t:ty),* $(,)?) => { $( impl DiagSingularity for $t {
+        fn is_singular_or_nonfinite(&self) -> bool {
+            !self.re.is_finite() || !self.im.is_finite() || self.norm_sqr() == 0.0
+        }
+    })* };
 }
 
-impl DiagSingularity for Complex64 {
-    fn is_singular_or_nonfinite(&self) -> bool {
-        !self.re.is_finite() || !self.im.is_finite() || self.norm_sqr() == 0.0
-    }
-}
-
-impl DiagSingularity for Complex32 {
-    fn is_singular_or_nonfinite(&self) -> bool {
-        !self.re.is_finite() || !self.im.is_finite() || self.norm_sqr() == 0.0
-    }
-}
+impl_diag_real!(f64, f32);
+impl_diag_complex!(Complex64, Complex32);
 
 fn check_singular_diagonal<T: DiagSingularity + Copy>(t: &TypedTensor<T>) -> Result<()> {
     let n = t.shape[0].min(t.shape[1]);
