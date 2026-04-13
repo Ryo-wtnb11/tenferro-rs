@@ -239,3 +239,47 @@ fn pad_to_match_hvp_correct() {
         assert!((*val - 2.0).abs() < TOL, "HVP[{i}]={val}, expected=2.0");
     }
 }
+
+#[test]
+fn dynamic_truncate_size_zero_produces_empty() {
+    let mut engine = Engine::new(CpuBackend::new());
+    let x = TracedTensor::from_tensor(f64_tensor(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+    let size = TracedTensor::from_tensor(f64_scalar(0.0));
+
+    let mut result = x.dynamic_truncate(&size, 0);
+    let data = get_f64_data(result.eval(&mut engine).unwrap());
+    assert!(data.is_empty());
+}
+
+#[test]
+fn dynamic_truncate_negative_size_produces_empty() {
+    let mut engine = Engine::new(CpuBackend::new());
+    let x = TracedTensor::from_tensor(f64_tensor(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+    let size = TracedTensor::from_tensor(f64_scalar(-3.0));
+
+    let mut result = x.dynamic_truncate(&size, 0);
+    let data = get_f64_data(result.eval(&mut engine).unwrap());
+    assert!(data.is_empty());
+}
+
+#[test]
+fn dynamic_truncate_nan_size_produces_empty() {
+    let mut engine = Engine::new(CpuBackend::new());
+    let x = TracedTensor::from_tensor(f64_tensor(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+    let size = TracedTensor::from_tensor(f64_scalar(f64::NAN));
+
+    let mut result = x.dynamic_truncate(&size, 0);
+    let data = get_f64_data(result.eval(&mut engine).unwrap());
+    assert!(data.is_empty());
+}
+
+#[test]
+fn dynamic_truncate_inf_size_produces_empty() {
+    let mut engine = Engine::new(CpuBackend::new());
+    let x = TracedTensor::from_tensor(f64_tensor(vec![3], vec![1.0, 2.0, 3.0]));
+    let size = TracedTensor::from_tensor(f64_scalar(f64::INFINITY));
+
+    let mut result = x.dynamic_truncate(&size, 0);
+    let data = get_f64_data(result.eval(&mut engine).unwrap());
+    assert!(data.is_empty());
+}

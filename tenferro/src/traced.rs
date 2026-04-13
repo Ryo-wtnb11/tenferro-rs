@@ -424,15 +424,17 @@ impl TracedTensor {
     pub fn try_jvp(&self, wrt: &TracedTensor, tangent: &TracedTensor) -> Option<TracedTensor> {
         let wrt_input_key = leaf_input_key(wrt);
         let output_key = self.fragment.vals()[self.val].key.clone();
-        let aliases = self
+        let collected = self
             .checkpoint_chain
             .as_ref()
-            .map(|chain| chain.collect_aliases())
+            .map(|chain| chain.collect_all());
+        let aliases = collected
+            .as_ref()
+            .map(|c| c.aliases.clone())
             .unwrap_or_default();
-        let checkpoint_fragments = self
-            .checkpoint_chain
+        let checkpoint_fragments = collected
             .as_ref()
-            .map(|chain| chain.collect_fragments())
+            .map(|c| c.fragments.clone())
             .unwrap_or_default();
         let mut roots = self.resolve_roots();
         roots.extend(checkpoint_fragments.iter().cloned());
@@ -450,8 +452,8 @@ impl TracedTensor {
         let tangent_input_key = linear_input_key(&linear.fragment, linear.tangent_inputs[0].1);
 
         let mut inputs_map = (*self.inputs_map).clone();
-        if let Some(chain) = &self.checkpoint_chain {
-            inputs_map.extend(chain.collect_inputs());
+        if let Some(c) = &collected {
+            inputs_map.extend(c.inputs.clone());
         }
         inputs_map.insert(
             tangent_input_key,
@@ -487,15 +489,17 @@ impl TracedTensor {
     fn try_vjp(&self, wrt: &TracedTensor, cotangent: &TracedTensor) -> Option<TracedTensor> {
         let wrt_input_key = leaf_input_key(wrt);
         let output_key = self.fragment.vals()[self.val].key.clone();
-        let aliases = self
+        let collected = self
             .checkpoint_chain
             .as_ref()
-            .map(|chain| chain.collect_aliases())
+            .map(|chain| chain.collect_all());
+        let aliases = collected
+            .as_ref()
+            .map(|c| c.aliases.clone())
             .unwrap_or_default();
-        let checkpoint_fragments = self
-            .checkpoint_chain
+        let checkpoint_fragments = collected
             .as_ref()
-            .map(|chain| chain.collect_fragments())
+            .map(|c| c.fragments.clone())
             .unwrap_or_default();
         let mut roots = self.resolve_roots();
         roots.extend(checkpoint_fragments.iter().cloned());
@@ -521,8 +525,8 @@ impl TracedTensor {
             linear_input_key(&transposed.fragment, transposed.tangent_inputs[0].1);
 
         let mut inputs_map = (*self.inputs_map).clone();
-        if let Some(chain) = &self.checkpoint_chain {
-            inputs_map.extend(chain.collect_inputs());
+        if let Some(c) = &collected {
+            inputs_map.extend(c.inputs.clone());
         }
         inputs_map.insert(
             cotangent_input_key.clone(),

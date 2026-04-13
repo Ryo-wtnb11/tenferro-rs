@@ -7,6 +7,17 @@ fn f64_scalar(value: f64) -> Tensor {
     Tensor::F64(TypedTensor::from_vec(vec![], vec![value]))
 }
 
+fn f64_tensor(shape: Vec<usize>, data: Vec<f64>) -> Tensor {
+    Tensor::F64(TypedTensor::from_vec(shape, data))
+}
+
+fn get_f64_data(tensor: &Tensor) -> Vec<f64> {
+    match tensor {
+        Tensor::F64(inner) => inner.host_data().to_vec(),
+        other => panic!("expected F64 tensor, got {:?}", other.dtype()),
+    }
+}
+
 fn get_f64_scalar(tensor: &Tensor) -> f64 {
     match tensor {
         Tensor::F64(inner) => inner.host_data()[0],
@@ -298,5 +309,90 @@ fn grad_einsum_both_independently_checkpointed_matches_fd() {
     assert!(
         (ad_value - fd).abs() < TOL,
         "AD grad={ad_value}, FD grad={fd}"
+    );
+}
+
+#[test]
+fn double_checkpoint_on_same_tensor() {
+    let x_value = 2.0_f64;
+    let mut engine = Engine::new(CpuBackend::new());
+
+    let x = TracedTensor::from_tensor(f64_scalar(x_value));
+    let mut y = &x * &x;
+    y.checkpoint(&mut engine).unwrap();
+    let mut y = &y * &x;
+    y.checkpoint(&mut engine).unwrap();
+    let z = &y * &y;
+
+    let grad = z.grad(&x).unwrap();
+    let mut grad = grad;
+    let grad_value = get_f64_scalar(grad.eval(&mut engine).unwrap());
+
+    let f_concrete = |v: f64| {
+        let yy = v * v;
+        let yy2 = yy * v;
+        yy2 * yy2
+    };
+    let fd = (f_concrete(x_value + FD_H) - f_concrete(x_value - FD_H)) / (2.0 * FD_H);
+    assert!(
+        (grad_value - fd).abs() < TOL,
+        "double-checkpoint: grad={grad_value}, fd={fd}"
+    );
+}
+
+#[test]
+fn checkpoint_on_leaf_tensor() {
+    let mut engine = Engine::new(CpuBackend::new());
+
+    let mut x = TracedTensor::from_tensor(f64_scalar(3.0));
+    x.checkpoint(&mut engine).unwrap();
+
+    let value = get_f64_scalar(
+        x.data
+            .as_ref()
+            .expect("checkpoint on leaf should retain data"),
+    );
+    assert!((value - 3.0).abs() < 1.0e-12);
+
+    let one = TracedTensor::from_tensor(f64_scalar(1.0));
+    let mut z = &x + &one;
+    let result = get_f64_scalar(z.eval(&mut engine).unwrap());
+    assert!((result - 4.0).abs() < 1.0e-12);
+}
+
+#[test]
+fn shape_of_dynamic_truncate_output() {
+    let mut engine = Engine::new(CpuBackend::new());
+
+    let x = TracedTensor::from_tensor(f64_tensor(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+    let size = TracedTensor::from_tensor(f64_scalar(3.0));
+    let truncated = x.dynamic_truncate(&size, 0);
+
+    let mut shape_val = truncated.shape_of(0);
+    let shape_result = get_f64_scalar(shape_val.eval(&mut engine).unwrap());
+    assert!(
+        (shape_result - 3.0).abs() < TOL,
+        "shape_of(dynamic_truncate) = {shape_result}, expected 3.0"
+    );
+}
+
+#[test]
+fn checkpoint_with_dynamic_truncate_size_zero() {
+    let mut engine = Engine::new(CpuBackend::new());
+
+    let a = TracedTensor::from_tensor(f64_scalar(0.5));
+    let x = TracedTensor::from_tensor(f64_tensor(vec![3], vec![1.0, 2.0, 3.0]));
+    let size = TracedTensor::from_tensor(f64_scalar(0.0));
+
+    let mut y = &a * &x;
+    y = y.dynamic_truncate(&size, 0);
+    y.checkpoint(&mut engine).unwrap();
+
+    let z = y.reduce_sum(&[0]);
+    let mut grad = z.grad(&a).unwrap();
+    let grad_value = get_f64_scalar(grad.eval(&mut engine).unwrap());
+    assert!(
+        grad_value.abs() < TOL,
+        "truncate-to-zero: grad should be 0, got {grad_value}"
     );
 }

@@ -16,25 +16,33 @@ pub(crate) struct CheckpointNode {
     pub prev: Option<Arc<CheckpointNode>>,
 }
 
+pub(crate) struct CollectedCheckpoint {
+    pub aliases: HashMap<TensorInputKey, GlobalValKey<StdTensorOp>>,
+    pub fragments: Vec<Arc<Fragment<StdTensorOp>>>,
+    pub inputs: HashMap<TensorInputKey, Arc<Tensor>>,
+}
+
 impl CheckpointNode {
-    pub(crate) fn collect_aliases(&self) -> HashMap<TensorInputKey, GlobalValKey<StdTensorOp>> {
+    pub(crate) fn collect_all(&self) -> CollectedCheckpoint {
         let mut aliases = HashMap::new();
+        let mut fragments = Vec::new();
+        let mut inputs = HashMap::new();
         let mut current: Option<&CheckpointNode> = Some(self);
         while let Some(node) = current {
             aliases.insert(node.alias_key.clone(), node.alias_target.clone());
-            current = node.prev.as_deref();
-        }
-        aliases
-    }
-
-    pub(crate) fn collect_fragments(&self) -> Vec<Arc<Fragment<StdTensorOp>>> {
-        let mut fragments = Vec::new();
-        let mut current: Option<&CheckpointNode> = Some(self);
-        while let Some(node) = current {
             fragments.push(node.fragment.clone());
+            inputs.extend(
+                node.old_inputs
+                    .iter()
+                    .map(|(key, tensor)| (key.clone(), tensor.clone())),
+            );
             current = node.prev.as_deref();
         }
-        fragments
+        CollectedCheckpoint {
+            aliases,
+            fragments,
+            inputs,
+        }
     }
 
     pub(crate) fn collect_inputs(&self) -> HashMap<TensorInputKey, Arc<Tensor>> {
@@ -54,7 +62,7 @@ impl CheckpointNode {
     /// Merge two checkpoint chains into a single linked list.
     ///
     /// The lhs chain is reconstructed on top of the rhs chain so that
-    /// `collect_aliases`, `collect_fragments`, and `collect_inputs`
+    /// `collect_all` and `collect_inputs`
     /// traverse both sides during the AD pass.
     pub(crate) fn merge_chains(
         lhs: Option<Arc<CheckpointNode>>,
