@@ -29,6 +29,9 @@ pub mod cuda;
 #[cfg(feature = "rocm")]
 pub mod rocm;
 
+/// GPU backend via [CubeCL](https://github.com/tracel-ai/cubecl) (CUDA 12+).
+///
+/// Requires the `cubecl` feature.  See [`cubecl`] module docs for setup.
 #[cfg(feature = "cubecl")]
 pub mod cubecl;
 

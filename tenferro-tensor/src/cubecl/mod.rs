@@ -1,4 +1,25 @@
 //! CubeCL-based GPU backend for tenferro tensors.
+//!
+//! # Feature flag
+//!
+//! Enable the `cubecl` feature to compile this module:
+//!
+//! ```toml
+//! tenferro-tensor = { path = "...", features = ["cubecl"] }
+//! ```
+//!
+//! # Prerequisites
+//!
+//! This module depends on a [CubeCL](https://github.com/tracel-ai/cubecl) fork
+//! pinned via a git dependency (`shinaoka/cubecl`, rev `081e805`).  It requires
+//! **CUDA 12+** drivers and a compatible NVIDIA GPU at runtime.
+//!
+//! GPU-only tests are marked `#[ignore = "requires CUDA 12+ GPU"]`.
+//! Run them on a machine with a CUDA device:
+//!
+//! ```sh
+//! cargo test -p tenferro-tensor --features cubecl -- --ignored
+//! ```
 
 use tenferro_algebra::Semiring;
 
@@ -12,7 +33,7 @@ mod memory;
 mod runtime;
 
 pub use memory::{device_ptr, download_tensor, upload_tensor};
-pub use runtime::CubeclRuntime;
+pub use runtime::{gpu_available, CubeclRuntime};
 
 /// CubeCL-based GPU backend.
 ///
